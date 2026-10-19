@@ -1,0 +1,24 @@
+{
+  "name": "@claudinite/setup",
+  "version": "1.0.0",
+  "description": "Installs the Claudinite engine a repository pins and links .claudinite/bin/cn to it.",
+  "license": "UNLICENSED",
+  "type": "module",
+  "bin": {
+    "claudinite-setup": "bin/claudinite-setup.mjs"
+  },
+  "files": [
+    "bin/",
+    "install.mjs"
+  ],
+  "engines": {
+    "node": ">=18"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/missingbulb/ClaudiniteSetup.git"
+  },
+  "scripts": {
+    "test": "node --test"
+  }
+}
