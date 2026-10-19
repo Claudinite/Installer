@@ -289,17 +289,28 @@ export function httpsGet(url, { maxBytes, timeoutMs, env = process.env, headers 
   });
 }
 
-// privateDir makes dir (and its parents) mode 0700 and refuses one that is
-// a symbolic link, or, off Windows, not mode 0700 and owned by this user.
+// privateDir makes dir (and its parents) mode 0700, closes to 0700 one this
+// user owns that no one else could write to, as actions/cache restores it,
+// and refuses one that is a symbolic link, or, off Windows, not mode 0700
+// and owned by this user.
 function privateDir(dir, windows) {
   try {
     fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
   } catch {
     refuse(`cannot create the cache directory ${dir}`);
   }
-  const st = fs.lstatSync(dir);
+  let st = fs.lstatSync(dir);
   if (st.isSymbolicLink()) refuse(`the cache directory ${dir} is a symbolic link`);
   if (windows) return;
+  const mode = st.mode & 0o777;
+  if (st.isDirectory() && st.uid === process.getuid() && (mode & 0o022) === 0 && mode !== 0o700) {
+    try {
+      fs.chmodSync(dir, 0o700);
+    } catch {
+      refuse(`cannot close the cache directory ${dir} to mode 0700`);
+    }
+    st = fs.lstatSync(dir);
+  }
   if ((st.mode & 0o777) !== 0o700 || st.uid !== process.getuid()) {
     refuse(`the cache directory ${dir} must be mode 0700 and owned by you (found ${(st.mode & 0o777).toString(8)}, uid ${st.uid})`);
   }

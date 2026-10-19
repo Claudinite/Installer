@@ -212,14 +212,31 @@ test('--version is refused in an adopted repository, where settings.yaml pins th
   await assert.rejects(run(w, auth, { version: '1.61019.2' }), /--version applies only before adoption/);
 });
 
-test('a cache folder others can read is refused', async (t) => {
+test('a cache folder others could write to is refused', async (t) => {
+  const auth = authority();
+  const rel = release('1.61019.1', auth);
+  for (const mode of [0o775, 0o757, 0o777]) {
+    const w = world(t, npmFiles('1.61019.1', rel));
+    w.settings(`  version: "1.61019.1"\n  manifest: "${rel.pin}"`);
+    fs.mkdirSync(w.cacheRoot, { recursive: true });
+    fs.chmodSync(w.cacheRoot, mode);
+    await assert.rejects(run(w, auth), /must be mode 0700/, mode.toString(8));
+  }
+});
+
+test('a cache folder only its owner could write to, as actions/cache restores it, is closed and used', async (t) => {
   const auth = authority();
   const rel = release('1.61019.1', auth);
   const w = world(t, npmFiles('1.61019.1', rel));
   w.settings(`  version: "1.61019.1"\n  manifest: "${rel.pin}"`);
-  fs.mkdirSync(w.cacheRoot, { recursive: true, mode: 0o755 });
+  await run(w, auth);
+  const vdir = path.join(w.cacheRoot, '1.61019.1');
   fs.chmodSync(w.cacheRoot, 0o755);
-  await assert.rejects(run(w, auth), /must be mode 0700/);
+  fs.chmodSync(vdir, 0o755);
+  await run(w, auth);
+  assert.equal(w.fetched.length, 2);
+  assert.equal(fs.statSync(w.cacheRoot).mode & 0o777, 0o700);
+  assert.equal(fs.statSync(vdir).mode & 0o777, 0o700);
 });
 
 test('the engine block is read strictly', () => {
