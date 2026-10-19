@@ -3,7 +3,7 @@
 Installs the Claudinite engine a repository pins, and links `.claudinite/bin/cn` to it.
 
 ```sh
-npx --yes @claudinite/setup@1.0.0
+npx --yes @claudinite/setup@1.0.1
 ```
 
 Run it in the repository (or pass `--repo DIR`). Then run `.claudinite/bin/cn`.
@@ -32,7 +32,7 @@ With no `settings.yaml`, the installer installs the latest `@claudinite/cli`, or
 from it:
 
 ```sh
-npx --yes @claudinite/setup@1.0.0 && .claudinite/bin/cn adopt <packs>
+npx --yes @claudinite/setup@1.0.1 && .claudinite/bin/cn adopt <packs>
 ```
 
 ## In GitHub Actions
@@ -45,7 +45,7 @@ npx --yes @claudinite/setup@1.0.0 && .claudinite/bin/cn adopt <packs>
             ~/.npm/_cacache
           key: cn-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('.claudinite/settings.yaml') }}
           restore-keys: cn-${{ runner.os }}-${{ runner.arch }}-
-      - run: npx --yes --prefer-offline @claudinite/setup@1.0.0
+      - run: npx --yes --prefer-offline @claudinite/setup@1.0.1
 ```
 
 ## When it fails
