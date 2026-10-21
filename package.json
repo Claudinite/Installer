@@ -16,7 +16,7 @@
   },
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/Claudinite/ClaudiniteSetup.git"
+    "url": "git+https://github.com/Claudinite/Installer.git"
   },
   "scripts": {
     "test": "node --test"
