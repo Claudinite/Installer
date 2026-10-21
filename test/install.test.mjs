@@ -128,9 +128,9 @@ test('a pinned engine is installed and linked, and a warm run downloads nothing'
 test('a staging member reads the release from the GitHub repository engine.releases names', async (t) => {
   const auth = authority();
   const rel = release('1.61019.2', auth);
-  const base = 'https://github.example/missingbulb/ClaudiniteStagingDistro/releases/download/v1.61019.2';
+  const base = 'https://github.example/Claudinite/StagingReleases/releases/download/v1.61019.2';
   const w = world(t, { [`${base}/cli-1.61019.2.tgz`]: rel.channel, [`${base}/cli-${PLATFORM}-1.61019.2.tgz`]: rel.platform });
-  w.settings(`  version: "1.61019.2"\n  manifest: "${rel.pin}"\n  releases: "missingbulb/ClaudiniteStagingDistro"`);
+  w.settings(`  version: "1.61019.2"\n  manifest: "${rel.pin}"\n  releases: "Claudinite/StagingReleases"`);
   await run(w, auth, { github: 'https://github.example' });
   assert.equal(fs.readFileSync(path.join(w.repo, '.claudinite', 'bin', 'cn'), 'utf8'), 'cn 1.61019.2\n');
 });
