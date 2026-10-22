@@ -48,6 +48,26 @@ npx --yes @claudinite/setup@1.0.1 && .claudinite/bin/cn adopt <packs>
       - run: npx --yes --prefer-offline @claudinite/setup@1.0.1
 ```
 
+## Updating
+
+```sh
+npx --yes @claudinite/setup@1 update [--to V] [--engine-only | --packs-only] [--dry-run] [--json] [--strict]
+```
+
+`update` picks the engine to move to. That is the newest version a dist-tag of the repository's
+`engine.channel` points at (`latest` for `stable`, `latest` and `staging` for `staging`) that is
+newer than the pin, of the same major, and not deprecated, held or revoked. If `engine.releases`
+names a repository, it is that repository's latest release. `--to` names the exact version
+instead; it is the only way to an older version or a new major.
+
+It downloads and checks that engine as above, runs its `selftest --repo` with no tokens in its
+environment, and then runs its `cn update apply` with the flags given. Apply writes the pin, the
+settings, the workflows and the packs into the working tree; review the diff and commit it. With
+nothing newer, the pinned engine runs `update apply` for the packs alone.
+
+The exit code is apply's: 0 updated or up to date, 2 updated but `--strict` found a blocking
+finding. It exits 1 when it refused with nothing written, and 3 when it could not run.
+
 ## When it fails
 
 It removes `.claudinite/bin/cn`, so no other engine runs in its place. It explains why on stderr,
@@ -61,3 +81,6 @@ arguments exit 2.
 
 Raise `version` in `package.json`, merge, and dispatch the `release` workflow. Versions are immutable
 and change only when the install logic does.
+
+Dispatching it with `preview` publishes `<version>-preview.<run>` under the `preview` dist-tag, with no
+git tag. `@1` never resolves to a preview, so only a repository that names that exact version runs it.

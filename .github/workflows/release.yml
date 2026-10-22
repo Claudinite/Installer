@@ -1,10 +1,17 @@
 # Publishes the version package.json names to npm, with provenance, through
 # npm's trusted publishing for this workflow; no token is stored. A version
 # already on npm is refused, since every version a workflow names must stay
-# the code it was.
+# the code it was. A preview publishes <version>-preview.<run> under the
+# npm dist-tag preview and takes no git tag, so @1 never resolves to it and
+# only a repository naming that exact version runs it.
 name: release
 on:
   workflow_dispatch:
+    inputs:
+      preview:
+        description: Publish a preview for the canaries instead of a release
+        type: boolean
+        default: false
 permissions:
   contents: write
   id-token: write
@@ -29,7 +36,15 @@ jobs:
             exit 1
           fi
           echo "VERSION=$version" >> "$GITHUB_ENV"
-      - run: npm publish --access public --provenance
-      - run: |
+      - name: Publish a preview
+        if: inputs.preview
+        run: |
+          npm version --no-git-tag-version "$VERSION-preview.$GITHUB_RUN_NUMBER"
+          npm publish --access public --provenance --tag preview
+          echo "published @claudinite/setup@$VERSION-preview.$GITHUB_RUN_NUMBER"
+      - if: ${{ !inputs.preview }}
+        run: npm publish --access public --provenance
+      - if: ${{ !inputs.preview }}
+        run: |
           git tag "v$VERSION"
           git push origin "v$VERSION"
