@@ -1,6 +1,6 @@
 {
   "name": "@claudinite/setup",
-  "version": "1.0.2",
+  "version": "1.1.0",
   "description": "Installs the Claudinite engine a repository pins and links .claudinite/bin/cn to it.",
   "license": "UNLICENSED",
   "type": "module",
@@ -9,7 +9,8 @@
   },
   "files": [
     "bin/",
-    "install.mjs"
+    "install.mjs",
+    "update.mjs"
   ],
   "engines": {
     "node": ">=18"

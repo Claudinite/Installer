@@ -49,7 +49,7 @@ export class Unreachable extends Error {
   }
 }
 
-const refuse = (msg) => {
+export const refuse = (msg) => {
   throw new Refusal(msg);
 };
 
@@ -86,10 +86,11 @@ export function readEngineBlock(text, file) {
     manifest: value('manifest'),
     package: value('package'),
     releases: value('releases'),
+    channel: value('channel'),
   };
 }
 
-const isVersion = (v) => typeof v === 'string' && /^[0-9]+\.[0-9]+\.[0-9]+$/.test(v);
+export const isVersion = (v) => typeof v === 'string' && /^[0-9]+\.[0-9]+\.[0-9]+$/.test(v);
 const isPin = (p) => typeof p === 'string' && /^sha512-[A-Za-z0-9+/]{86}==$/.test(p);
 const isRepo = (r) => /^[A-Za-z0-9-]+\/[A-Za-z0-9_-][A-Za-z0-9._-]*$/.test(r);
 
@@ -336,162 +337,200 @@ function place(dir, name, data, mode) {
   fs.renameSync(tmp, dest);
 }
 
-// install sets up the engine for repo and returns where its binary is.
-// The world it reads (roots, registry, GitHub host, download, clock) comes
-// in opts, so tests can stand in for each.
-export async function install(opts = {}) {
+// context reads the world install and update run in (roots, registry,
+// GitHub host, download, clock, platform, cache) from opts, so tests can
+// stand in for each.
+export function context(opts = {}) {
   const env = opts.env ?? process.env;
-  const repo = path.resolve(opts.repo ?? '.');
-  const roots = opts.roots ?? ROOTS;
   const registry = (opts.registry ?? env.CLAUDINITE_REGISTRY ?? 'https://registry.npmjs.org').replace(/\/$/, '');
   const github = (opts.github ?? env.CLAUDINITE_GITHUB ?? 'https://github.com').replace(/\/$/, '');
   const maxBytes = Number(opts.maxBytes ?? env.CLAUDINITE_MAX_DOWNLOAD_BYTES ?? 64 << 20);
   if (!Number.isSafeInteger(maxBytes) || maxBytes <= 0) refuse('CLAUDINITE_MAX_DOWNLOAD_BYTES must be a number');
   const timeoutMs = Math.max(30, Math.floor(maxBytes / 220000)) * 1000;
-  const get = opts.get ?? ((url, headers) => httpsGet(url, { maxBytes, timeoutMs, env, headers }));
-  const now = opts.now ?? Date.now();
   const platform = opts.platform ?? platformOf();
-  const bin = binaryName(platform);
-  const windows = platform.startsWith('windows-');
-  const linkDir = path.join(repo, '.claudinite', 'bin');
+  if (!env.XDG_CACHE_HOME && !env.HOME && !opts.cacheRoot) {
+    refuse('HOME is not set, so there is no cache folder (set HOME or XDG_CACHE_HOME)');
+  }
+  return {
+    env,
+    repo: path.resolve(opts.repo ?? '.'),
+    roots: opts.roots ?? ROOTS,
+    registry,
+    github,
+    get: opts.get ?? ((url, headers) => httpsGet(url, { maxBytes, timeoutMs, env, headers })),
+    now: opts.now ?? Date.now(),
+    platform,
+    bin: binaryName(platform),
+    windows: platform.startsWith('windows-'),
+    cacheRoot: opts.cacheRoot ?? path.join(env.XDG_CACHE_HOME || path.join(env.HOME, '.cache'), 'claudinite'),
+  };
+}
 
+// Settings is the engine block of an adopted repository's settings.yaml,
+// checked, or undefined when the repository has none.
+export function readSettings(repo) {
+  const file = path.join(repo, '.claudinite', 'settings.yaml');
+  const text = read(file);
+  if (text === undefined) return undefined;
+  const e = readEngineBlock(text.toString('utf8'), file);
+  const pkg = e.package ?? '@claudinite/cli';
+  if (!isVersion(e.version)) refuse(`engine.version in ${file} must be a quoted version like "1.60928.1"`);
+  if (!isPin(e.manifest)) refuse(`engine.manifest in ${file} must be a quoted sha512-... integrity string`);
+  if (!PACKAGES.includes(pkg)) refuse(`engine.package in ${file} must be "@claudinite/cli" or "@claudinite/cli-rc"`);
+  if (e.releases !== undefined && !isRepo(e.releases)) {
+    refuse(`engine.releases in ${file} must be a quoted GitHub repository like "owner/name"`);
+  }
+  return { file, version: e.version, pin: e.manifest, pkg, releases: e.releases, channel: e.channel };
+}
+
+// packument reads pkg's npm document.
+export async function packument(ctx, pkg) {
+  const url = `${ctx.registry}/${pkg}`;
   try {
-    const settingsFile = path.join(repo, '.claudinite', 'settings.yaml');
-    const settingsText = read(settingsFile);
-    let version, pin, pkg, releases;
-    if (settingsText !== undefined) {
-      if (opts.version) refuse(`--version applies only before adoption; ${settingsFile} pins engine.version`);
-      const e = readEngineBlock(settingsText.toString('utf8'), settingsFile);
-      ({ version, manifest: pin, releases } = e);
-      pkg = e.package ?? '@claudinite/cli';
-      if (!isVersion(version)) refuse(`engine.version in ${settingsFile} must be a quoted version like "1.60928.1"`);
-      if (!isPin(pin)) refuse(`engine.manifest in ${settingsFile} must be a quoted sha512-... integrity string`);
-      if (!PACKAGES.includes(pkg)) refuse(`engine.package in ${settingsFile} must be "@claudinite/cli" or "@claudinite/cli-rc"`);
-      if (releases !== undefined && !isRepo(releases)) {
-        refuse(`engine.releases in ${settingsFile} must be a quoted GitHub repository like "owner/name"`);
-      }
-    } else {
-      pkg = '@claudinite/cli';
-      version = opts.version;
-      if (version !== undefined && !isVersion(version)) refuse(`--version must be a version like 1.60928.1`);
-    }
-    const name = pkg.slice('@claudinite/'.length);
+    return JSON.parse((await ctx.get(url, { accept: 'application/vnd.npm.install-v1+json' })).toString('utf8'));
+  } catch (e) {
+    if (e instanceof Refusal || e instanceof Unreachable) throw e;
+    refuse(`${url} is not a packument`);
+  }
+}
 
-    // A repository not yet adopted takes the version from npm, and the
-    // channel tarball's integrity from the same packument.
-    let integrity;
-    if (pin === undefined) {
-      const url = `${registry}/${pkg}`;
-      let doc;
-      try {
-        doc = JSON.parse((await get(url, { accept: 'application/vnd.npm.install-v1+json' })).toString('utf8'));
-      } catch (e) {
-        if (e instanceof Refusal || e instanceof Unreachable) throw e;
-        refuse(`${url} is not a packument`);
-      }
+// fetchEngine places version of pkg, verified, in the cache and returns
+// where its binary and manifest are. pin, when given, is the SHA-512 the
+// manifest must have, and its certificate's validity is not checked;
+// integrity, when given, is npm's for the channel tarball. With neither,
+// the signature alone vouches for what is downloaded. The certificate must
+// be valid now unless a pin vouches for the bytes; fresh asks for that
+// check even then, for an engine no person pinned yet.
+export async function fetchEngine(ctx, { version, pin, integrity, pkg, releases, pinFile, fresh }) {
+  const { platform, bin, windows, roots, now, get } = ctx;
+  const name = pkg.slice('@claudinite/'.length);
+  const vdir = path.join(ctx.cacheRoot, version);
+  privateDir(ctx.cacheRoot, windows);
+  privateDir(vdir, windows);
+
+  // The manifest a pin names, or, unpinned, the one whose signature
+  // verifies now; then this platform's entry in it.
+  const accept = (manifest, sigText) => {
+    if (pin !== undefined && integrityOf(manifest) !== pin) {
+      refuse(`manifest.json of ${pkg} ${version} does not match the pin${pinFile ? ` in ${pinFile}` : ''}`);
+    }
+    verifyManifest(sigText, manifest, roots, pin === undefined || fresh ? now : undefined);
+    let m;
+    try {
+      m = JSON.parse(manifest.toString('utf8'));
+    } catch {
+      refuse('manifest.json is not JSON');
+    }
+    if (m.version !== version) refuse(`manifest.json is for ${m.version}, not ${version}`);
+    const entry = m.binaries?.[platform];
+    if (!entry || entry.file !== bin || !/^[0-9a-f]{64}$/.test(entry.sha256 ?? '')) {
+      refuse(`${pkg} ${version} lists no binary for ${platform}`);
+    }
+    return entry;
+  };
+
+  const cached = () => {
+    const manifest = read(path.join(vdir, 'manifest.json'));
+    const sigText = read(path.join(vdir, 'manifest.sig.json'));
+    const binary = read(path.join(vdir, bin));
+    if (!manifest || !sigText || !binary) return false;
+    if (pin !== undefined && integrityOf(manifest) !== pin) return false;
+    let entry;
+    try {
+      entry = accept(manifest, sigText.toString('utf8'));
+    } catch (e) {
+      if (e instanceof Refusal) return false;
+      throw e;
+    }
+    return sha256hex(binary) === entry.sha256 && binary.length === entry.size;
+  };
+
+  if (!cached()) {
+    const base = releases ? `${ctx.github}/${releases}/releases/download/v${version}` : undefined;
+    const channelURL = base ? `${base}/${name}-${version}.tgz` : `${ctx.registry}/${pkg}/-/${name}-${version}.tgz`;
+    const binaryURL = base
+      ? `${base}/${name}-${platform}-${version}.tgz`
+      : `${ctx.registry}/${pkg}-${platform}/-/${name}-${platform}-${version}.tgz`;
+    const channel = await get(channelURL);
+    if (integrity !== undefined && integrityOf(channel) !== integrity) {
+      refuse(`${channelURL} does not match npm's integrity for ${pkg} ${version}`);
+    }
+    const manifest = tarFile(channel, 'package/manifest.json') ?? refuse(`${channelURL} holds no package/manifest.json`);
+    const sig = tarFile(channel, 'package/manifest.sig.json') ?? refuse(`${channelURL} holds no package/manifest.sig.json`);
+    const entry = accept(manifest, sig.toString('utf8'));
+    const binary = tarFile(await get(binaryURL), `package/bin/${bin}`) ?? refuse(`${binaryURL} holds no package/bin/${bin}`);
+    if (sha256hex(binary) !== entry.sha256 || binary.length !== entry.size) {
+      refuse(`the ${platform} binary of ${pkg} ${version} does not match its manifest entry`);
+    }
+    try {
+      place(vdir, bin, binary, 0o555);
+      place(vdir, 'manifest.sig.json', sig, 0o444);
+      place(vdir, 'manifest.json', manifest, 0o444);
+    } catch {
+      refuse(`cannot place the engine in ${vdir}`);
+    }
+  }
+  return { binary: path.join(vdir, bin), manifest: path.join(vdir, 'manifest.json') };
+}
+
+// linkEngine points repo's .claudinite/bin/cn at target, or copies it
+// there where links are refused.
+export function linkEngine(ctx, target) {
+  const linkDir = path.join(ctx.repo, '.claudinite', 'bin');
+  const link = path.join(linkDir, ctx.bin);
+  let same = false;
+  try {
+    same = fs.realpathSync(link) === fs.realpathSync(target);
+  } catch {}
+  if (same) return;
+  try {
+    fs.mkdirSync(linkDir, { recursive: true });
+    fs.rmSync(link, { force: true });
+    try {
+      fs.symlinkSync(target, link);
+    } catch {
+      fs.copyFileSync(target, link);
+      fs.chmodSync(link, 0o555);
+    }
+  } catch {
+    refuse(`cannot link or copy the engine into ${linkDir}`);
+  }
+}
+
+// unlinkEngine removes repo's .claudinite/bin/cn: the engine never runs
+// unverified.
+export function unlinkEngine(repo) {
+  for (const b of ['cn', 'cn.exe']) fs.rmSync(path.join(repo, '.claudinite', 'bin', b), { force: true });
+}
+
+// install sets up the engine for repo and returns where its binary is.
+export async function install(opts = {}) {
+  const repo = path.resolve(opts.repo ?? '.');
+  try {
+    const ctx = context(opts);
+    const s = readSettings(repo);
+    let spec;
+    if (s !== undefined) {
+      if (opts.version) refuse(`--version applies only before adoption; ${s.file} pins engine.version`);
+      spec = { version: s.version, pin: s.pin, pkg: s.pkg, releases: s.releases, pinFile: s.file };
+    } else {
+      // A repository not yet adopted takes the version from npm, and the
+      // channel tarball's integrity from the same packument.
+      const pkg = '@claudinite/cli';
+      let version = opts.version;
+      if (version !== undefined && !isVersion(version)) refuse(`--version must be a version like 1.60928.1`);
+      const doc = await packument(ctx, pkg);
       version ??= doc?.['dist-tags']?.latest;
       if (!isVersion(version)) refuse(`${pkg} has no latest version`);
-      integrity = doc?.versions?.[version]?.dist?.integrity;
+      const integrity = doc?.versions?.[version]?.dist?.integrity;
       if (typeof integrity !== 'string' || !integrity.startsWith('sha512-')) refuse(`${pkg} has no ${version}`);
+      spec = { version, integrity, pkg };
     }
-
-    if (!env.XDG_CACHE_HOME && !env.HOME && !opts.cacheRoot) {
-      refuse('HOME is not set, so there is no cache folder (set HOME or XDG_CACHE_HOME)');
-    }
-    const cacheRoot = opts.cacheRoot ?? path.join(env.XDG_CACHE_HOME || path.join(env.HOME, '.cache'), 'claudinite');
-    const vdir = path.join(cacheRoot, version);
-    privateDir(cacheRoot, windows);
-    privateDir(vdir, windows);
-
-    // The manifest a pin names, or, unpinned, the one whose signature
-    // verifies now; then this platform's entry in it.
-    const accept = (manifest, sigText) => {
-      if (pin !== undefined && integrityOf(manifest) !== pin) {
-        refuse(`manifest.json of ${pkg} ${version} does not match the pin in ${path.join(repo, '.claudinite', 'settings.yaml')}`);
-      }
-      verifyManifest(sigText, manifest, roots, pin === undefined ? now : undefined);
-      let m;
-      try {
-        m = JSON.parse(manifest.toString('utf8'));
-      } catch {
-        refuse('manifest.json is not JSON');
-      }
-      if (m.version !== version) refuse(`manifest.json is for ${m.version}, not ${version}`);
-      const entry = m.binaries?.[platform];
-      if (!entry || entry.file !== bin || !/^[0-9a-f]{64}$/.test(entry.sha256 ?? '')) {
-        refuse(`${pkg} ${version} lists no binary for ${platform}`);
-      }
-      return entry;
-    };
-
-    const cached = () => {
-      const manifest = read(path.join(vdir, 'manifest.json'));
-      const sigText = read(path.join(vdir, 'manifest.sig.json'));
-      const binary = read(path.join(vdir, bin));
-      if (!manifest || !sigText || !binary) return false;
-      if (pin !== undefined && integrityOf(manifest) !== pin) return false;
-      let entry;
-      try {
-        entry = accept(manifest, sigText.toString('utf8'));
-      } catch (e) {
-        if (e instanceof Refusal) return false;
-        throw e;
-      }
-      return sha256hex(binary) === entry.sha256 && binary.length === entry.size;
-    };
-
-    if (!cached()) {
-      const base = releases ? `${github}/${releases}/releases/download/v${version}` : undefined;
-      const channelURL = base ? `${base}/${name}-${version}.tgz` : `${registry}/${pkg}/-/${name}-${version}.tgz`;
-      const binaryURL = base
-        ? `${base}/${name}-${platform}-${version}.tgz`
-        : `${registry}/${pkg}-${platform}/-/${name}-${platform}-${version}.tgz`;
-      const channel = await get(channelURL);
-      if (integrity !== undefined && integrityOf(channel) !== integrity) {
-        refuse(`${channelURL} does not match npm's integrity for ${pkg} ${version}`);
-      }
-      const manifest = tarFile(channel, 'package/manifest.json') ?? refuse(`${channelURL} holds no package/manifest.json`);
-      const sig = tarFile(channel, 'package/manifest.sig.json') ?? refuse(`${channelURL} holds no package/manifest.sig.json`);
-      const entry = accept(manifest, sig.toString('utf8'));
-      const binary = tarFile(await get(binaryURL), `package/bin/${bin}`) ?? refuse(`${binaryURL} holds no package/bin/${bin}`);
-      if (sha256hex(binary) !== entry.sha256 || binary.length !== entry.size) {
-        refuse(`the ${platform} binary of ${pkg} ${version} does not match its manifest entry`);
-      }
-      try {
-        place(vdir, bin, binary, 0o555);
-        place(vdir, 'manifest.sig.json', sig, 0o444);
-        place(vdir, 'manifest.json', manifest, 0o444);
-      } catch {
-        refuse(`cannot place the engine in ${vdir}`);
-      }
-    }
-
-    const target = path.join(vdir, bin);
-    const link = path.join(linkDir, bin);
-    let same = false;
-    try {
-      same = fs.realpathSync(link) === fs.realpathSync(target);
-    } catch {}
-    if (!same) {
-      try {
-        fs.mkdirSync(linkDir, { recursive: true });
-        fs.rmSync(link, { force: true });
-        try {
-          fs.symlinkSync(target, link);
-        } catch {
-          fs.copyFileSync(target, link);
-          fs.chmodSync(link, 0o555);
-        }
-      } catch {
-        refuse(`cannot link or copy the engine into ${linkDir}`);
-      }
-    }
-    return target;
+    const { binary } = await fetchEngine(ctx, spec);
+    linkEngine(ctx, binary);
+    return binary;
   } catch (e) {
-    // The engine never runs unverified, so the link to it goes.
-    if (e instanceof Refusal || e instanceof Unreachable) {
-      for (const b of ['cn', 'cn.exe']) fs.rmSync(path.join(linkDir, b), { force: true });
-    }
+    if (e instanceof Refusal || e instanceof Unreachable) unlinkEngine(repo);
     throw e;
   }
 }
