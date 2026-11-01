@@ -10,9 +10,9 @@ jobs:
     strategy:
       matrix:
         include:
-          - { os: ubuntu-24.04, node: "18" }
-          - { os: ubuntu-24.04, node: "22" }
-          - { os: ubuntu-24.04, node: "24" }
+          - { os: "${{ vars.ACTIONS_RUNNER_IMAGE }}", node: "18" }
+          - { os: "${{ vars.ACTIONS_RUNNER_IMAGE }}", node: "22" }
+          - { os: "${{ vars.ACTIONS_RUNNER_IMAGE }}", node: "24" }
           - { os: macos-15, node: "22" }
     runs-on: ${{ matrix.os }}
     steps:
